@@ -1,9 +1,8 @@
 
 #pragma once
-#include "lauxlib.h"
-#include "lua.h"
-#include "lua.hpp"
+
 #include <benchmark/benchmark.h>
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <format>
@@ -11,14 +10,97 @@
 #include <iterator>
 #include <memory>
 #include <regex>
+#include <stack>
 #include <string>
-#include <type_traits>
 #include <optional>
 #include <iostream>
+#include <utility>
 #include <vector>
 
+extern "C" {
+#include "lauxlib.h"
+#include "lua.h"
+#include "lua.hpp"
+}
 #include  "Tools.hpp"
 namespace LuaBenchmark {
+inline static void PushLog();
+inline static void LuaHook(lua_State* L, lua_Debug* ar);
+
+
+struct LuaResult{
+	bool bSuccess {false};
+	std::string msgError {};
+	std::optional<double> luaResult {std::nullopt};
+	std::optional<std::string> luaLog {std::nullopt};
+	LuaResult() 
+		: bSuccess(false), msgError(""), luaResult(std::nullopt), luaLog(std::nullopt) {}
+	LuaResult(bool ret, std::string error, 
+		std::optional<double> luaReturn=std::nullopt, 
+		std::optional<std::string> log=std::nullopt)
+		: bSuccess(ret), msgError(error), luaResult(luaReturn), luaLog(log) {}
+
+	operator bool() const{
+		return bSuccess;
+	}
+};
+
+
+struct LuaProfileReportor{
+	using TimeClock = std::chrono::high_resolution_clock;
+	using TimePoint = TimeClock::time_point;
+	
+	void LuaEventRecord(lua_State* luaContext, lua_Debug* ar) {
+		// 这里可以添加钩子逻辑，例如记录函数调用时间等
+		lua_getinfo(luaContext, "nSl", ar);	
+		auto name = ar->name ? ar->name : "unknown";
+		std::string info = std::format("Hooked function: {} at {}:{}", 
+			name, ar->short_src, ar->currentline);
+		if (ar->event == LUA_HOOKCALL){
+			luaCallStack.push({name, TimeClock::now()});
+			std::string time = GetTimeString(TimeClock::now());
+			std::string hint = std::format("Call function: {}, Time: {}", name, time);
+		} else if (ar->event == LUA_HOOKRET){
+			if (!luaCallStack.empty() && luaCallStack.top().first == name) {
+				auto [funcName, startTime] = luaCallStack.top();
+				luaCallStack.pop();
+				auto endTime = TimeClock::now();
+				auto duration = std::chrono::duration_cast<std::chrono::microseconds>(endTime - startTime).count();
+				std::string time = GetTimeString(endTime);
+				std::string hint = std::format("Return from function: {}, Time: {}, Duration: {} us", 
+					funcName, time, duration);
+			} else {
+				std::string time = GetTimeString(TimeClock::now());
+				std::string hint = std::format("Return from function: {}, Time: {}", name, time);
+			}
+		}
+	}
+private:
+	std::stack<std::pair<std::string, TimePoint>> luaCallStack {};
+
+};
+struct LuaEntry{
+	std::string luaFileName{""};
+	std::string luaFuncName{""};
+};
+
+inline static void PushLog(){}
+
+inline static void LuaHook(lua_State* L, lua_Debug* ar){
+
+}
+
+inline static LuaEntry GetLuaEntry(const std::string& funcname) {
+	if (funcname == "")
+		return {"", ""};
+
+	uint32_t index = funcname.find_first_of("::");
+	std::string luaFileName = funcname.substr(0, index);
+	std::string luaFuncName = funcname.substr(index + 2);
+	return {luaFileName, luaFuncName};
+}
+
+
 inline static bool CheckLuaFunction(const std::filesystem::path& modulePath, const std::string& funcname){
 	if (modulePath.empty() || !std::filesystem::exists(modulePath)){
 		LOG(Error, "Invalid module path: {}", modulePath.string());
@@ -26,7 +108,7 @@ inline static bool CheckLuaFunction(const std::filesystem::path& modulePath, con
 	}
 	// 通过简单的词法分析解析源码文件是否存在该函数
 	try{
-		std::ifstream  file(modulePath);
+		std::ifstream file(modulePath.string());
 		if (!file){
 			LOG(Error, "CheckLuaFunction Failed to open file: {}", modulePath.string());
             return false;
@@ -66,7 +148,60 @@ inline static bool CheckLuaFunction(const std::filesystem::path& modulePath, con
 
 }
 
+/*
+ * @function: 在工作空间中查找 Lua 模块文件
+ * @param workspace: Lua 工作空间路径
+ * @param moduleName: 模块名, 可以是 "modulename"
+ */
+inline static std::filesystem::path FindLuaModule(
+	const std::filesystem::path& workspace,
+	const std::string& moduleName
+){
+	if(!CheckPath(workspace)){
+		LOG(Error, "FindLuaModule Failed, workspace is invalid, module name = {}", moduleName);
+		return "";
+	}
 
+	std::string normalizedName = moduleName;
+	std::replace(normalizedName.begin(), normalizedName.end(), '.', '/');
+
+	std::vector<std::filesystem::path> possiblePaths = {
+		workspace / (normalizedName + ".lua"),
+		workspace / normalizedName
+	};
+	// 先找可能存的预设目录
+	for(const auto&path : possiblePaths){
+		if(std::filesystem::exists(path) &&
+		   std::filesystem::is_regular_file(path)){
+			LOG(Info, "Find Lua Module: {} at {}", moduleName, path.string());
+			return path;
+		}
+	}
+	// 找不到在递归搜索
+	try{
+		for(const auto& entry: std::filesystem::recursive_directory_iterator(workspace)){
+			if (!std::filesystem::is_regular_file(entry)){
+				continue;
+			}
+			std::string filename = entry.path().stem().string();
+			size_t last = normalizedName.find_last_of('/');
+			std::string basename = (last !=  std::string::npos)
+				? normalizedName.substr(last+1)
+				: normalizedName;
+
+			if (filename == basename){
+				LOG(Info, "Found module via recursive search: {}", entry.path().string());
+				return entry.path();
+			}
+		}
+	}catch (...){
+		LOG(Error, "Error occurred during directory traversal for module '{}'", moduleName);
+		return "";
+	}
+	// 未找到模块
+	LOG(Error, "Module '{}' not found in workspace", moduleName);
+	return "";
+}
 
 class LuaVM{
 	struct LuaVMDeleter{
@@ -74,34 +209,14 @@ class LuaVM{
 			if(L) lua_close(L);
 		}
 	};
-	struct LuaResult{
-		bool bSuccess {false};
-		std::string msgError {};
-		std::optional<double> luaResult {std::nullopt};
-		std::optional<std::string> luaLog {std::nullopt};
-		LuaResult() 
-			: bSuccess(false), msgError(""), luaResult(std::nullopt), luaLog(std::nullopt) {}
-		LuaResult(bool ret, std::string error, 
-			std::optional<double> luaReturn=std::nullopt, 
-			std::optional<std::string> log=std::nullopt)
-			: bSuccess(ret), msgError(error), luaResult(luaReturn), luaLog(log) {}
 
-		operator bool() const{
-			return bSuccess;
-		}
-	};
-	struct LuaProfileReport{
-		LuaResult result {};
-	};
-	struct LuaEntry{
-		std::string luaFileName{""};
-		std::string luaFuncName{""};
-	};
+
 
 	using LuaWorkspace = std::filesystem::path;
 	using LuaVMInstancePtr = std::unique_ptr<lua_State, LuaVMDeleter>;
 	using LuaResultPtr = LuaResult*;
-
+	using TimeClock = std::chrono::high_resolution_clock;
+	using TimePoint = TimeClock::time_point;
 public:
 	/* 
 	 * @function: 构造函数
@@ -118,20 +233,62 @@ public:
 	~LuaVM() = default;
 
 public:
-	LuaProfileReport Run() {
-		LuaProfileReport report {};
+	LuaResult Run(const std::string& funcname, const std::string& args) {
+		if (!__Check()) { // Ensure Lua VM context and workspace are valid
+			LuaResult ret = LuaResult(
+				false,
+				"Lua VM is not properly initialized"
+			);
+			return ret;
+		}
+		LuaResult ret {};
+		LuaProfileReportor report {};
+		auto luaVMptr = luaVMContext.get();
+		lua_sethook(luaVMptr, LuaHook, LUA_MASKCALL | LUA_MASKRET, 0);
 
-		return report;
+		int bRet = luaL_loadfile(luaVMptr, luaEntryFile.string().c_str());
+		if (bRet != LUA_OK) {
+			ret.bSuccess = false;
+			ret.msgError = std::format("Failed to load Lua file: {}, error: {}", 
+				luaEntryFile.string(), lua_tostring(luaVMptr, -1));
+			__PushLog(&ret, true);
+			return ret;
+		}
+		bRet = lua_pcall(luaVMptr, 0, 0, 0);
+		if (bRet != LUA_OK) {
+			ret.bSuccess = false;
+			ret.msgError = std::format("Failed to call Lua function: {}, error: {}", 
+				luaEntryFile.string(), lua_tostring(luaVMptr, -1));
+			__PushLog(&ret, true);
+			return ret;
+		}
+
+		// 执行入口函数
+		lua_getglobal(luaVMptr, funcname.c_str());
+		lua_pushlstring(luaVMptr, args.c_str(), args.length());
+		int luaRet = lua_pcall(luaVMptr, 1, 0, 0);
+		if (luaRet != LUA_OK) {
+			ret.bSuccess = false;
+			ret.msgError = std::format("Failed to call Lua function: {}, error: {}", 
+				luaEntryFile.string(), lua_tostring(luaVMptr, -1));
+			__PushLog(&ret, true);
+			return ret;
+		}
+
+		lua_sethook(luaVMptr, nullptr, 0, 0);
+
+		// 输出统计和报错信息
+		return ret;
 	}
 private:
 	LuaResult InitLuaVMContext(){	
 		lua_State* L = luaL_newstate();
-		PushLog("Init Lua VM Context:");	
+		__PushLog("Init Lua VM Context:");	
 		if (!L){
 			LuaResult ret {};
 			ret.bSuccess = false;
 			ret.msgError = "Failed to create Lua VM; lua_State* L == nullptr"; 
-			PushLog(&ret, true);
+			__PushLog(&ret, true);
 			return ret;
 		}
 		luaVMContext = LuaVMInstancePtr(L);
@@ -141,17 +298,17 @@ private:
 		LuaResult ret {};
 		ret.bSuccess = true;
 		ret.msgError = "Create Lua VM success"; 
-		PushLog(&ret);
+		__PushLog(&ret);
 		return ret;
 	}
 	LuaResult InitWorkSpace(std::filesystem::path path) {
-		PushLog("Init Lua Work Space:");
+		__PushLog("Init Lua Work Space:");
 		if (!CheckPath(path))[[unlikely]]{
 			LuaResult ret = LuaResult(
 				false,
 				std::format("Directory Error, path = {}", path.string())
 			);
-			PushLog(&ret, true);
+			__PushLog(&ret, true);
 			return ret;
 		}
 		if (!luaVMContext){
@@ -159,20 +316,19 @@ private:
 				false,
 				"Lua VM Context Error! LuaVM::luaVMContext not exists"
 			);
-			PushLog(&ret, true);
+			__PushLog(&ret, true);
 			return ret;
 		}
 		auto luaVMptr = luaVMContext.get(); 
 		workspace = path;
 
-		
 		lua_getglobal(luaVMptr, "package");
 		if(!lua_istable(luaVMptr, -1)){
 			LuaResult ret = LuaResult(
 				false,
 				"Lua package table not found"
 			);
-			PushLog(&ret, true);
+			__PushLog(&ret, true);
 			return ret;
 		}
 
@@ -237,106 +393,71 @@ private:
 			true,
 			"Success! Path Check Pass"
 		);
-		PushLog(&ret);
+		__PushLog(&ret);
 		return ret;
 	}
 
 	LuaResult InitEntryFunction(const std::string& funcname){
 		if (!luaVMContext) {
 			LuaResult ret(false, "Lua VM Context is not initialized");
-			PushLog(&ret, true);
+			__PushLog(&ret, true);
 			return ret;
 		}
 
-		luaEntryFunction = funcname;
-		LuaEntry entry = GetLuaEntry();
+		LuaEntry entry = GetLuaEntry(funcname);
 		
 		if (entry.luaFileName.empty()) {
 			LuaResult ret(false, "Invalid entry function format. Expected 'module::function'");
-			PushLog(&ret, true);
+			__PushLog(&ret, true);
 			return ret;
 		}
 
-		std::filesystem::path modulePath = FindLuaModule(entry.luaFileName);
-
+		std::filesystem::path modulePath = FindLuaModule(workspace, entry.luaFileName);
+	
 		if(modulePath.empty()){
 			LuaResult ret(false, 
             std::format("Module '{}' not found in workspace", entry.luaFileName));
-			PushLog(&ret, true);
+			__PushLog(&ret, true);
 			return ret;
 		}
-		
-		    // 检查函数是否存在
+		luaEntryFile = modulePath;
+		luaEntryFunc = entry.luaFuncName;
+		// 检查函数是否存在
 		if (!CheckLuaFunction(modulePath, entry.luaFuncName)) {
 			LuaResult ret(false, 
 				std::format("Function '{}' not found in module '{}'", 
 						entry.luaFuncName, entry.luaFileName));
-			PushLog(&ret, true);
+			__PushLog(&ret, true);
 			return ret;
 		}
 		
 		LuaResult ret(true, 
 			std::format("Entry function '{}::{}' found at {}", 
 					entry.luaFileName, entry.luaFuncName, modulePath.string()));
-		PushLog(&ret);
+		__PushLog(&ret);
 		return ret;
 	}
 private:
 
-	std::filesystem::path FindModule(const std::string&  moduleName) const {
-		if(!CheckPath(workspace)){
-			LOG(Error, "FindLuaModule Failed, workspace is invalid, module name = {}", moduleName);
-        	return "";
+	bool __Check() const {
+		if (!luaVMContext) {
+			return false;
 		}
-
-		std::string normalizedName = moduleName;
-		std::replace(normalizedName.begin(), normalizedName.end(), '.', '/');
-
-		std::vector<std::filesystem::path> possiblePaths = {
-			workspace / (normalizedName + ".lua"),
-			workspace / normalizedName
-		};
-		// 先找可能存的预设目录
-		for(const auto&path : possiblePaths){
-			if(std::filesystem::exists(path) &&
-			   std::filesystem::is_regular_file(path)){
-				LOG(Info, "Find Lua Module: {} at {}", moduleName, path.string());
-				return path;
-			}
+		if (workspace.empty() || !CheckPath(workspace)) {
+			return false;
 		}
-		// 找不到在递归搜索
-		try{
-			for(const auto& entry: std::filesystem::recursive_directory_iterator(workspace)){
-				if (!std::filesystem::is_regular_file(entry)){
-					continue;
-				}
-				std::string filename = entry.path().stem().string();
-				size_t last = normalizedName.find_last_of('/');
-				std::string basename = (last !=  std::string::npos)
-					? normalizedName.substr(last+1)
-					: normalizedName;
-
-				if (filename == basename){
-					LOG(Info, "Found module via recursive search: {}", entry.path().string());
-					return entry.path();
-				}
-			}
-		}catch (...){
-			LOG(Error, "Error occurred during directory traversal for module '{}'", moduleName);
-			return "";
+		if (luaEntryFile.empty() || !std::filesystem::exists(luaEntryFile)) {
+			return false;
 		}
-		// 未找到模块
-		LOG(Error, "Module '{}' not found in workspace", moduleName);
-		return "";
+		return true;
 	}
-
-	void PushLog(LuaResult* ret, bool bIsChild=false, std::string extra="", int tabnum=1){
+	void __PushLog(LuaResult* ret, bool bIsChild=false, std::string extra="", int tabnum=1){
 		if (ret) {
-			PushLog(ret->msgError, bIsChild, extra, tabnum);
+			__PushLog(ret->msgError, bIsChild, extra, tabnum);
 		}
 	}
 
-	void PushLog(std::string log="", bool bIsChild=false, std::string extra="", int tabnum=1){
+	void __PushLog(std::string log="", bool bIsChild=false, std::string extra="", int tabnum=1){
 		if (log != "") {
 			if (bIsChild) {
 				int loop = tabnum < 1 ? 1 : tabnum;
@@ -350,31 +471,14 @@ private:
 		}
 	}
 
-	LuaEntry GetLuaEntry() const {
-		if(luaEntryFunction == "")
-			return {"", ""};
-
-		uint32_t index = luaEntryFunction.find_first_of("::");
-		std::string luaFileName = luaEntryFunction.substr(0, index);
-		std::string luaFuncName = luaEntryFunction.substr(index + 2);
-		return {luaFileName, luaFuncName};
-	}
-
-	std::filesystem::path FindLuaModule(const std::string& moduleName){
-		if (!CheckPath(workspace)){
-			std::string error = std::format("FindLuaModule Failed, module name = {}", moduleName);
-			LuaResult ret = LuaResult(false, error);
-			return "";
-		}
-		
-
-	}
 private:
-	LuaProfileReport report{};
+	LuaProfileReportor report {};
 	LuaWorkspace workspace {};
 	LuaVMInstancePtr luaVMContext {nullptr};
 	std::string luaVMlog {""};
-	std::string luaEntryFunction {""};
+	std::filesystem::path luaEntryFile {""};
+	std::string luaEntryFunc {""};
+	std::stack<std::pair<std::string, TimePoint>> luaCallStack {};
 };
 
 

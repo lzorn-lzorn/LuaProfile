@@ -3,19 +3,40 @@
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <ctime>
 #include <type_traits>
 #define INFO std::cout
 #define ERROR std::cerr
 #ifdef USELOG
     #define LOG(ostream, fmt, ...) \
+        ostream << std::format(fmt, ##__VA_ARGS__) << "\n"
+
+    #define GETLOG(ostream, fmt, ...) \
         ([&]() { \
             std::string msg = std::format(fmt, ##__VA_ARGS__); \
             ostream << msg << "\n"; \
             return msg; \
         })()
 #else
-    #define LOG(ostream, fmt, ...) std::format(fmt, ##__VA_ARGS__)
+    #define LOG(ostream, fmt, ...) (void)0
+    #define GETLOG(ostream, fmt, ...) (void)0
 #endif 
+
+inline static std::string GetTimeString(std::chrono::high_resolution_clock::time_point time) {
+    // 获取与 system_clock 相同的 epoch 的 time_point
+    auto sys_tp = std::chrono::system_clock::time_point(
+        std::chrono::duration_cast<std::chrono::system_clock::duration>(
+            time.time_since_epoch()
+        )
+    );
+
+    // 当前时区
+    std::chrono::zoned_time zt{std::chrono::current_zone(), sys_tp};
+    return std::format("{:%H:%M:%S}", zt);
+}
+
+
+
 
 // 判断是否是标准智能指针
 template <typename T>
