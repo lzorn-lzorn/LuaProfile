@@ -4,6 +4,8 @@
 #include <optional>
 #include <string>
 #include <ctime>
+#include <chrono>
+#include <format>
 #include <type_traits>
 #define INFO std::cout
 #define ERROR std::cerr
@@ -30,9 +32,28 @@ inline static std::string GetTimeString(std::chrono::high_resolution_clock::time
         )
     );
 
-    // 当前时区
+
+/** 
+ * @brief 这里会出现静态分析报错的情况:
+ *      std::chrono::zoned_time 和 std::chrono::current_zone()
+ *      不存在于 std::chrono
+ */
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wunknown-pragmas"
+#if __has_include(<chrono>) && defined(__cpp_lib_chrono) && __cpp_lib_chrono >= 201907L
+    // C++20 时区功能
     std::chrono::zoned_time zt{std::chrono::current_zone(), sys_tp};
     return std::format("{:%H:%M:%S}", zt);
+#else
+    // 回退到传统方法  
+    auto time_t_val = std::chrono::system_clock::to_time_t(sys_tp);
+    auto local_time = *std::localtime(&time_t_val);
+    return std::format("{:02d}:{:02d}:{:02d}", 
+                      local_time.tm_hour, 
+                      local_time.tm_min, 
+                      local_time.tm_sec);
+#endif
+#pragma clang diagnostic pop
 }
 
 

@@ -151,7 +151,7 @@ int main(int argc, char** argv) {
         "--benchmark_format=json",
         "--benchmark_out=lua_benchmark_results.json"
     };
-    
+    zoned_time
     int json_argc = sizeof(json_args) / sizeof(json_args[0]);
     
     // 初始化并运行基准测试
