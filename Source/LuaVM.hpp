@@ -281,6 +281,9 @@ public:
 		return ret;
 	}
 private:
+	/** 
+	*	@brief: 初始化Lua执行的上下文, 创建Lua虚拟机 lua_State
+	*/
 	LuaResult InitLuaVMContext(){	
 		lua_State* L = luaL_newstate();
 		__PushLog("Init Lua VM Context:");	
@@ -301,6 +304,10 @@ private:
 		__PushLog(&ret);
 		return ret;
 	}
+
+	/**
+	 *	@brief: 初始化Lua的工作空间 
+	*/
 	LuaResult InitWorkSpace(std::filesystem::path path) {
 		__PushLog("Init Lua Work Space:");
 		if (!CheckPath(path))[[unlikely]]{
@@ -358,7 +365,7 @@ private:
 		lua_pop(luaVMptr, 1);
 
 		std::string clib_path = root_cpath + ";" + 
-			workspace.string() + "/?.dlll"     + // Windows
+			workspace.string() + "/?.dll"      + // Windows
 			workspace.string() + "/?.so"       + // Linux
 			workspace.string() + "/loadall.dll"; // 通用加载器
 
