@@ -30,7 +30,7 @@ file(GLOB_RECURSE include
 
 add_executable(${PROJECT_NAME} ${src})
 target_include_directories(${PROJECT_NAME} PRIVATE
-	${include}
+	${CMAKE_CURRENT_SOURCE_DIR}/Source
 	${CMAKE_CURRENT_SOURCE_DIR}/benchmark/include
 	${CMAKE_CURRENT_SOURCE_DIR}/LuaJIT/src
 )

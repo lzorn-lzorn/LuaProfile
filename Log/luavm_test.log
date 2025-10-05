@@ -1,4 +1,24 @@
-=== LuaVM Test Start ===
-[INFO] LuaVM_Test: Creating LuaVM instance
-[INFO] LuaVM_Test: Creating LuaVM instanceLuaVM created successfully
-=== LuaVM Test End ===
+=== Test Session Start ===
+	[INFO]: TestApp: Application initialization started
+
+	[INFO]: TestApp: Loading configuration files
+
+	[WARNING]: TestApp: Configuration file not found, using defaults
+
+	[INFO]: TestApp: System ready
+
+	[DEBUG]: TestApp: Debug: Memory usage: 1024KB
+
+	[INFO]: TestApp: Processing item 1
+
+	[INFO]: TestApp: Processing item 2
+
+	[INFO]: TestApp: Processing item 3
+
+	[ERROR]: TestApp: Simulated error for testing
+
+	[INFO]: TestApp: This message only goes to file
+
+	[INFO]: TestApp: All operations completed successfully
+
+=== Test Session End ===
